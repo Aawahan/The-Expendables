@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Exam Proctoring — Demo</title>
+  <style>
+    :root{
+      --bg:#0f1724;--card:#0b1220;
+      --accent:#4f46e5;--muted:#9aa4b2;--danger:#ef4444;
+    }
+    *{box-sizing:border-box;font-family:sans-serif;}
+    body{margin:0;background:var(--bg);color:white;display:flex;align-items:center;justify-content:center;height:100vh;}
+    .card{background:var(--card);padding:2rem;border-radius:1rem;max-width:600px;width:100%;box-shadow:0 4px 20px rgba(0,0,0,.5);}
+    h1,h2{margin-top:0;text-align:center;}
+    label{display:block;margin:.5rem 0;}
+    input,button,textarea{width:100%;padding:.6rem;margin:.3rem 0;border-radius:.5rem;border:none;}
+    button{background:var(--accent);color:white;font-weight:bold;cursor:pointer;}
+    button:disabled{background:gray;cursor:not-allowed;}
+    .danger{background:var(--danger)!important;}
+    .hidden{display:none;}
+    video{width:100%;border-radius:.5rem;}
+    .toast{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);
+      background:black;color:white;padding:.5rem 1rem;border-radius:.5rem;opacity:.9;}
+    .star{font-size:2rem;cursor:pointer;color:gray;}
+    .star.selected{color:gold;}
+    .logo {
+      font-weight:700;
+      color:var(--accent);
+      text-align:center;
+      font-size:2rem;
+      margin-bottom:20px;
+      letter-spacing:3px;
+    }
+  </style>
+</head>
+<body>
+<div class="app card">
+  <!-- ✅ Global Logo -->
+  <div class="logo">THE EXPENDABLES</div>
+
+  <!-- Screen 1: Login -->
+  <div id="loginScreen" class="screen active">
+    <h1>Exam Login</h1>
+    <label>Student ID <input type="text" id="studentId"></label>
+    <label>Name <input type="text" id="studentName"></label>
+    <button id="loginBtn">Login</button>
+  </div>
+
+  <!-- Screen 2: Permissions -->
+  <div id="permScreen" class="screen hidden">
+    <h2>Permissions Check</h2>
+    <p><strong>Camera:</strong> <span id="camStatus">Not enabled</span></p>
+    <button id="enableCamera">Enable Camera</button>
+    <p><strong>Fullscreen:</strong> <span id="fsStatus">Not enabled</span></p>
+    <button id="enableFullscreen">Enable Fullscreen</button>
+    <p id="detectorNote" style="font-size:.8rem;color:var(--muted)"></p>
+    <button id="startExam">Start Exam</button>
+    <video id="proctorVideo" autoplay muted playsinline></video>
+  </div>
+
+  <!-- Screen 3: Exam -->
+  <div id="examScreen" class="screen hidden">
+    <h2>Exam in Progress</h2>
+    <div id="timer"></div>
+    <div id="warnings" style="color:var(--danger);font-weight:bold;"></div>
+    <div id="questions"></div>
+  </div>
+
+  <!-- Screen 4: Feedback -->
+  <div id="feedbackScreen" class="screen hidden">
+    <h2>Feedback</h2>
+    <div id="stars">
+      <span class="star" data-val="1">★</span>
+      <span class="star" data-val="2">★</span>
+      <span class="star" data-val="3">★</span>
+      <span class="star" data-val="4">★</span>
+      <span class="star" data-val="5">★</span>
+    </div>
+    <textarea id="feedbackText" placeholder="Write your feedback (optional)"></textarea>
+    <button id="submitFeedback">Submit Feedback</button>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/face-api.js"></script>
+<script>
+const examDurationMinutes = 1;
+let state={studentId:"",studentName:"",started:false,endTime:null,camEnabled:false,fsEnabled:false,warnings:0};
+let timerInterval,faceLoop,faceDetector;
+const proctorVideo=document.getElementById("proctorVideo");
+
+function showScreen(id){
+  document.querySelectorAll(".screen").forEach(s=>s.classList.add("hidden"));
+  document.getElementById(id).classList.remove("hidden");
+}
+function toast(msg){
+  const t=document.getElementById("toast");t.textContent=msg;t.classList.remove("hidden");
+  setTimeout(()=>t.classList.add("hidden"),2000);
+}
+
+/***** FLOW *****/
+document.getElementById('loginBtn').onclick = ()=>{
+  const enteredId = document.getElementById('studentId').value.trim();
+  const enteredName = document.getElementById('studentName').value.trim();
+
+  // ✅ Predefined student credentials
+  const validStudents = {
+    "S001": "Aawahan",
+    "S002": "Naitik",
+    "S003": "Tushar",
+    "S004": "Satyarth"
+  };
+
+  if(!enteredId || !enteredName){
+    toast("Fill all fields");
+    return;
+  }
+
+  if(validStudents[enteredId] !== enteredName){
+    toast("Invalid Student ID or Name");
+    return;
+  }
+
+  // Save state if valid
+  state.studentId = enteredId;
+  state.studentName = enteredName;
+  showScreen('permScreen');
+};
+
+// ✅ Enable Camera Button
+document.getElementById('enableCamera').onclick = async ()=>{
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:true});
+    proctorVideo.srcObject=stream;
+    state.camEnabled=true;
+    document.getElementById('camStatus').textContent="Camera Enabled";
+
+    if('FaceDetector'in window){
+      faceDetector=new FaceDetector({fastMode:true,maxDetectedFaces:5});
+      document.getElementById('detectorNote').textContent="Using native FaceDetector.";
+    } else {
+      document.getElementById('detectorNote').textContent="Using face-api.js fallback.";
+      await faceapi.nets.tinyFaceDetector.loadFromUri("https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js/weights");
+    }
+    startFaceLoop();
+  }catch(e){toast("Camera permission denied");console.error(e);}
+};
+
+// ✅ Enable Fullscreen Button
+document.getElementById('enableFullscreen').onclick = async ()=>{
+  try{
+    if(!document.fullscreenElement){
+      await document.documentElement.requestFullscreen();
+      state.fsEnabled=true;
+      document.getElementById('fsStatus').textContent='Full Screen';
+    }
+  }catch(e){toast("Fullscreen request denied");console.error(e);}
+};
+
+document.getElementById('startExam').onclick = async ()=>{
+  if(!state.camEnabled){toast("Camera not enabled");return;}
+  if(!document.fullscreenElement){toast("Fullscreen not enabled");return;}
+
+  state.fsEnabled=true;
+  document.getElementById('fsStatus').textContent='Full Screen';
+  state.started=true;
+  state.endTime=Date.now()+examDurationMinutes*60000;
+  startTimer();
+  loadQuestions();
+  showScreen('examScreen');
+};
+
+function finishExam(){
+  clearInterval(timerInterval);
+  state.started=false;
+  showScreen('feedbackScreen');
+}
+
+/***** TIMER *****/
+function startTimer(){
+  timerInterval=setInterval(()=>{
+    const left=state.endTime-Date.now();
+    if(left<=0){clearInterval(timerInterval);finishExam();}
+    else{
+      const m=Math.floor(left/60000),s=Math.floor((left%60000)/1000);
+      document.getElementById('timer').textContent=`Time left: ${m}:${s.toString().padStart(2,'0')}`;
+    }
+  },1000);
+}
+
+/***** SURVEY QUESTIONS (One by One) *****/
+let surveyQs = [
+  {q:"1. How visually appealing is the website design?", opts:["Excellent","Good","Average","Poor"]},
+  {q:"2. How innovative do you find the proposed solution?", opts:["Highly innovative","Innovative","Somewhat innovative","Not innovative"]},
+  {q:"3. How secure does the system appear for online exams?", opts:["Very secure","Secure","Somewhat secure","Not secure"]},
+  {q:"4. How well do the AI features (camera/audio monitoring) integrate into the system?", opts:["Excellent integration","Good integration","Average integration","Poor integration"]},
+  {q:"5. Would you recommend this system for real-world use?", opts:["Definitely","Probably","Maybe","No"]}
+];
+let currentQ = 0;
+
+function loadQuestions(){
+  currentQ = 0;
+  renderQuestion();
+}
+
+function renderQuestion(){
+  const qDiv = document.getElementById('questions');
+  qDiv.innerHTML = "";
+
+  const q = surveyQs[currentQ];
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `<p>${q.q}</p>`;
+
+  q.opts.forEach((opt,j)=>{
+    wrap.innerHTML+=`<label><input type="radio" name="q${currentQ}" value="${j}"> ${opt}</label><br>`;
+  });
+
+  // Navigation button
+  if(currentQ < surveyQs.length-1){
+    wrap.innerHTML += `<button id="nextBtn">Next</button>`;
+  } else {
+    wrap.innerHTML += `<button id="submitExam" class="danger">Submit Exam</button>`;
+  }
+
+  qDiv.appendChild(wrap);
+
+  // Attach handler
+  if(currentQ < surveyQs.length-1){
+    document.getElementById("nextBtn").onclick = ()=>{
+      const checked = document.querySelector(`input[name="q${currentQ}"]:checked`);
+      if(!checked){toast("Please select an option before proceeding.");return;}
+      currentQ++;
+      renderQuestion();
+    };
+  } else {
+    document.getElementById("submitExam").onclick = finishExam;
+  }
+}
+
+/***** FEEDBACK *****/
+document.querySelectorAll('.star').forEach(star=>{
+  star.addEventListener('click',()=>{
+    document.querySelectorAll('.star').forEach(s=>s.classList.remove('selected'));
+    star.classList.add('selected');
+    for(let prev=star.previousElementSibling;prev;prev=prev.previousElementSibling){
+      prev.classList.add('selected');
+    }
+  });
+});
+
+document.getElementById('submitFeedback').onclick=()=>{
+  const stars=document.querySelectorAll('.star.selected').length;
+  const text=document.getElementById('feedbackText').value.trim();
+  console.log("Feedback submitted",{stars,text});
+  toast("Feedback submitted. Thank you!");
+  showScreen('loginScreen'); // redirect to login
+};
+
+/***** FACE MONITORING *****/
+async function startFaceLoop(){
+  if(faceLoop)clearInterval(faceLoop);
+  faceLoop=setInterval(async ()=>{
+    if(!state.started)return;
+    let faces=[];
+    try{
+      if(faceDetector){
+        faces=await faceDetector.detect(proctorVideo);
+      } else {
+        faces=await faceapi.detectAllFaces(
+          proctorVideo,
+          new faceapi.TinyFaceDetectorOptions({inputSize:416, scoreThreshold:0.5})
+        );
+      }
+    }catch(e){console.error("Face detection error:",e);}
+    if(faces && faces.length>1){
+      state.warnings++;
+      toast(`Multiple faces detected! Warning ${state.warnings}/5`);
+      document.getElementById('warnings').textContent=`Warnings: ${state.warnings}/5`;
+      if(state.warnings>=5){toast("Exam terminated due to violations.");finishExam();}
+    }
+  },500); // check every 0.5s
+}
+
+/***** FULLSCREEN MONITOR *****/
+document.addEventListener("fullscreenchange", () => {
+  if (state.started && !document.fullscreenElement) {
+    toast("Fullscreen exited! Exam will be submitted.");
+    finishExam();
+  }
+});
+</script>
+</body>
+</html>
